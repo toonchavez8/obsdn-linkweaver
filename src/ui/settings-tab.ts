@@ -85,6 +85,16 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 					}
 				}));
 
+		new Setting(containerEl)
+			.setName('Auto-insert sequence links')
+			.setDesc('Automatically insert navigation links when creating files in a sequence')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.autoInsertSequenceLinks)
+				.onChange(async (value) => {
+					this.plugin.settings.autoInsertSequenceLinks = value;
+					await this.plugin.saveSettings();
+				}));
+
 		// Discovery Section
 		containerEl.createEl('h3', { text: 'Discovery' });
 

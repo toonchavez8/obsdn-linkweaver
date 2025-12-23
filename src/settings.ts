@@ -15,6 +15,7 @@ export interface LinkWeaverSettings {
 	autoUpdateLinks: boolean;
 	validateLinksOnSave: boolean;
 	linkPreviewLength: number;
+	autoInsertSequenceLinks: boolean;  // NEW: Auto-insert links on file creation
 	
 	// Discovery
 	maxPathDepth: number;
@@ -53,6 +54,7 @@ export const DEFAULT_SETTINGS: LinkWeaverSettings = {
 	autoUpdateLinks: true,
 	validateLinksOnSave: false,
 	linkPreviewLength: 200,
+	autoInsertSequenceLinks: false,
 	
 	// Discovery
 	maxPathDepth: 5,
