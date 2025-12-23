@@ -1,0 +1,74 @@
+/* LinkWeaver Plugin Styles */
+
+.linkweaver-status-bar {
+	cursor: pointer;
+	padding: 0 8px;
+}
+
+.linkweaver-status-bar:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.linkweaver-modal {
+	padding: 20px;
+}
+
+.linkweaver-modal h2 {
+	margin-top: 0;
+}
+
+.linkweaver-link-stats {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 10px;
+	margin: 15px 0;
+}
+
+.linkweaver-stat-item {
+	padding: 10px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 5px;
+}
+
+.linkweaver-stat-label {
+	font-size: 0.9em;
+	color: var(--text-muted);
+}
+
+.linkweaver-stat-value {
+	font-size: 1.5em;
+	font-weight: bold;
+	color: var(--text-accent);
+}
+
+.linkweaver-sequence-indicator {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.linkweaver-sequence-position {
+	font-weight: 600;
+}
+
+.linkweaver-path-visualizer {
+	margin: 15px 0;
+	padding: 15px;
+	background-color: var(--background-secondary);
+	border-radius: 5px;
+}
+
+.linkweaver-path-node {
+	display: inline-block;
+	padding: 5px 10px;
+	margin: 5px;
+	background-color: var(--interactive-accent);
+	color: var(--text-on-accent);
+	border-radius: 3px;
+}
+
+.linkweaver-path-arrow {
+	display: inline-block;
+	margin: 0 5px;
+	color: var(--text-muted);
+}
