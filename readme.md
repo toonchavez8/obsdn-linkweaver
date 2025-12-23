@@ -429,10 +429,10 @@ MIT License - see LICENSE file for details
 
 ## 🔗 Links
 
-- **GitHub Repository**: [Coming Soon]
-- **Documentation**: [Coming Soon]
-- **Bug Reports**: [Coming Soon]
-- **Feature Requests**: [Coming Soon]
+- **GitHub Repository**: [https://github.com/toonchavez8/obsdn-linkweaver](https://github.com/toonchavez8/obsdn-linkweaver)
+- **Documentation**: [Wiki](https://github.com/toonchavez8/obsdn-linkweaver/wiki)
+- **Bug Reports**: [Issues](https://github.com/toonchavez8/obsdn-linkweaver/issues)
+- **Feature Requests**: [Issues](https://github.com/toonchavez8/obsdn-linkweaver/issues)
 
 ---
 
