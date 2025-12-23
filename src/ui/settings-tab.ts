@@ -69,6 +69,10 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.validateLinksOnSave = value;
 					await this.plugin.saveSettings();
+					// Re-register event handlers with new settings
+					if (value) {
+						new Notice('Link validation on save enabled. Reload plugin to activate.');
+					}
 				}));
 
 		new Setting(containerEl)

@@ -4,6 +4,17 @@ export interface PatternConfig {
 	enabled: boolean;
 }
 
+export interface ValidationRuleConfig {
+	name: string;
+	type: 'pattern' | 'folder' | 'extension' | 'custom';
+	pattern?: string; // For pattern type: regex to match against link paths
+	folder?: string; // For folder type: folder path to validate
+	extensions?: string[]; // For extension type: allowed file extensions
+	error: string; // Error message to display
+	severity: 'error' | 'warning';
+	enabled: boolean;
+}
+
 export interface LinkWeaverSettings {
 	// Sequential Navigation
 	enableSequentialNav: boolean;
@@ -16,6 +27,7 @@ export interface LinkWeaverSettings {
 	validateLinksOnSave: boolean;
 	linkPreviewLength: number;
 	autoInsertSequenceLinks: boolean;  // NEW: Auto-insert links on file creation
+	validationRules: ValidationRuleConfig[]; // Custom validation rules
 	
 	// Discovery
 	maxPathDepth: number;
@@ -55,6 +67,24 @@ export const DEFAULT_SETTINGS: LinkWeaverSettings = {
 	validateLinksOnSave: false,
 	linkPreviewLength: 200,
 	autoInsertSequenceLinks: false,
+	validationRules: [
+		{
+			name: 'No External Links',
+			type: 'pattern',
+			pattern: '^https?://',
+			error: 'External links not allowed',
+			severity: 'warning',
+			enabled: false
+		},
+		{
+			name: 'No Attachments Folder',
+			type: 'folder',
+			folder: 'attachments',
+			error: 'Links to attachments folder not allowed',
+			severity: 'warning',
+			enabled: false
+		}
+	],
 	
 	// Discovery
 	maxPathDepth: 5,
