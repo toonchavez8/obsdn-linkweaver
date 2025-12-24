@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
+import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import LinkWeaverPlugin from '../main';
 
 export class LinkWeaverSettingTab extends PluginSettingTab {
@@ -71,7 +71,8 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 					// Re-register event handlers with new settings
 					if (value) {
-						new Notice('Link validation on save enabled. Reload plugin to activate.');
+						const notice = new Notice('Link validation on save enabled. Reload plugin to activate.', 3000)
+						notice.hide();
 					}
 				}));
 
@@ -82,8 +83,8 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 				.setPlaceholder('200')
 				.setValue(String(this.plugin.settings.linkPreviewLength))
 				.onChange(async (value) => {
-					const num = parseInt(value);
-					if (!isNaN(num) && num > 0) {
+					const num = Number.parseInt(value);
+					if (!Number.isNaN(num) && num > 0) {
 						this.plugin.settings.linkPreviewLength = num;
 						await this.plugin.saveSettings();
 					}
@@ -109,8 +110,8 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 				.setPlaceholder('5')
 				.setValue(String(this.plugin.settings.maxPathDepth))
 				.onChange(async (value) => {
-					const num = parseInt(value);
-					if (!isNaN(num) && num > 0) {
+					const num = Number.parseInt(value);
+					if (!Number.isNaN(num) && num > 0) {
 						this.plugin.settings.maxPathDepth = num;
 						await this.plugin.saveSettings();
 					}
@@ -123,8 +124,8 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 				.setPlaceholder('0.5')
 				.setValue(String(this.plugin.settings.similarityThreshold))
 				.onChange(async (value) => {
-					const num = parseFloat(value);
-					if (!isNaN(num) && num >= 0 && num <= 1) {
+					const num = Number.parseFloat(value);
+					if (!Number.isNaN(num) && num >= 0 && num <= 1) {
 						this.plugin.settings.similarityThreshold = num;
 						await this.plugin.saveSettings();
 					}

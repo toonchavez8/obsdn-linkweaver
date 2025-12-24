@@ -12,10 +12,10 @@ export function naturalSort(a: string, b: string): number {
 		const bPart = bParts[i] || '';
 
 		// If both parts are numbers, compare numerically
-		const aNum = parseInt(aPart);
-		const bNum = parseInt(bPart);
+		const aNum = Number.parseInt(aPart);
+		const bNum = Number.parseInt(bPart);
 
-		if (!isNaN(aNum) && !isNaN(bNum)) {
+		if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) {
 			if (aNum !== bNum) {
 				return aNum - bNum;
 			}
