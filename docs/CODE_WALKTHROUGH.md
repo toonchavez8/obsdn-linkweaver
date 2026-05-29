@@ -1,297 +1,319 @@
 # LinkWeaver Code Walkthrough
 
-This document explains LinkWeaver at a high-school reading level. The goal is to make it clear what each part of the code does, why it exists, and how data moves through the plugin.
+This walkthrough is written for a junior developer who wants to understand how the plugin is structured, how the core algorithms work, and where to make changes safely.
 
-## Big Picture
+## Architecture Overview
 
-LinkWeaver is an Obsidian plugin. Obsidian gives the plugin access to notes, links, metadata, the command palette, and the UI.
-
-The plugin is split into small service classes:
+LinkWeaver is an Obsidian plugin organized around service classes. `src/main.ts` owns plugin lifecycle and command wiring; the feature logic lives in smaller modules under `navigation`, `links`, and `discovery`.
 
 ```text
-main.ts
-  creates and connects the services
+src/main.ts
+  Plugin lifecycle, settings load/save, command registration, event handlers.
 
-navigation/
-  finds note sequences and moves between notes
+src/navigation/
+  Sequence detection, next/previous navigation, sequence link insertion.
 
-links/
-  validates links, counts links, previews links, and edits links
+src/links/
+  Link validation, link stats, previews, batch replacement, undo.
 
-discovery/
-  finds paths between notes and similar notes
+src/discovery/
+  Phase 3 graph features: path finding and similar-note scoring.
 
-ui/
-  shows Obsidian modals and settings screens
+src/ui/
+  Obsidian settings tab and modal rendering.
 
-utils/
-  small helper functions used by the services
+src/utils/
+  Small reusable helpers: parsing, natural sorting, cache.
 ```
 
-The main idea is:
+The runtime flow usually looks like this:
 
 ```text
-User runs a command in Obsidian
-  -> main.ts receives that command
-  -> main.ts calls the correct service
-  -> the service reads vault data or metadata
-  -> the service returns a result
-  -> a modal or notice shows the result to the user
+Obsidian command
+  -> LinkWeaverPlugin command callback in src/main.ts
+  -> service method such as PathFinder.findSimilarNotes(...)
+  -> Obsidian vault or metadataCache read
+  -> result object
+  -> modal, Notice, console output, or file write
 ```
 
-## Startup
+The important design choice is that the service classes do most of the business logic. UI classes should mostly collect input and render output. This keeps the logic testable with mocks.
+
+## Startup And Dependency Wiring
 
 File: `src/main.ts`
 
-`src/main.ts` is the front door of the plugin. Obsidian loads this file first.
+`LinkWeaverPlugin.onload()` is called by Obsidian when the plugin is enabled. It initializes settings, constructs services, registers commands, creates the status bar item, and subscribes to vault/workspace events.
 
-When Obsidian starts the plugin, `onload()` runs.
+Simplified shape:
 
 ```typescript
 async onload() {
   await this.loadSettings();
 
-  this.detector = new SequenceDetector(...);
-  this.navigator = new Navigator(...);
-  this.linkManager = new LinkManager(...);
-  this.pathFinder = new PathFinder(...);
+  this.detector = new SequenceDetector(this.app.vault, this.settings.customPatterns);
+  this.navigator = new Navigator(this.app, this.detector, this.settings);
+  this.linkManager = new LinkManager(this.app, this.settings.validationRules);
+  this.pathFinder = new PathFinder(this.app, this.settings);
 
   this.registerCommands();
   this.registerEventHandlers();
 }
 ```
 
-In plain English:
+Key responsibilities:
 
-1. Load saved user settings.
-2. Create the helper services.
-3. Register commands like `Find similar notes`.
-4. Watch for vault events like file rename, create, delete, and modify.
+- `loadSettings()` merges saved data with `DEFAULT_SETTINGS`.
+- `saveSettings()` persists settings and updates services that cache settings.
+- `registerCommands()` maps command palette actions to service calls.
+- `registerEventHandlers()` invalidates caches, updates links on rename, and optionally validates links on save.
 
-Why this matters:
+Example command flow:
 
-- `main.ts` does not try to do all the logic itself.
-- It delegates work to focused classes.
-- That makes the logic easier to test without launching Obsidian.
+```typescript
+this.addCommand({
+  id: 'find-similar-notes',
+  name: 'Find similar notes',
+  callback: () => {
+    const activeFile = this.app.workspace.getActiveFile();
+    const similarNotes = this.pathFinder.findSimilarNotes(activeFile);
+    new SimilarNotesModal(this.app, activeFile, similarNotes).open();
+  }
+});
+```
 
-## Settings
+The command callback should stay thin. It gets user context, calls the service, then renders the result.
+
+## Settings Model
 
 File: `src/settings.ts`
 
-Settings are the plugin's memory. They tell the plugin what behavior is turned on and how strict it should be.
-
-Example:
-
-```typescript
-export const DEFAULT_SETTINGS: LinkWeaverSettings = {
-  enableSequentialNav: true,
-  circularNavigation: false,
-  maxPathDepth: 5,
-  similarityThreshold: 0.5,
-  excludeFolders: []
-};
-```
+`LinkWeaverSettings` defines the plugin configuration contract. `DEFAULT_SETTINGS` provides safe defaults for first install and for missing saved keys after upgrades.
 
 Important settings:
 
-- `enableSequentialNav`: turns sequence navigation on or off.
-- `circularNavigation`: if true, the last note can go back to the first note.
-- `maxPathDepth`: how many link steps path finding is allowed to search.
-- `similarityThreshold`: how similar two notes must be before they are shown.
-- `excludeFolders`: folders ignored by discovery features.
+```typescript
+interface LinkWeaverSettings {
+  enableSequentialNav: boolean;
+  circularNavigation: boolean;
+  customPatterns: PatternConfig[];
+
+  autoUpdateLinks: boolean;
+  validateLinksOnSave: boolean;
+  linkPreviewLength: number;
+  validationRules: ValidationRuleConfig[];
+
+  maxPathDepth: number;
+  similarityThreshold: number;
+  excludeFolders: string[];
+}
+```
+
+How settings affect behavior:
+
+- `enableSequentialNav` gates navigation and sequence link insertion.
+- `circularNavigation` lets next/previous wrap at sequence boundaries.
+- `customPatterns` adds user regex patterns for sequence detection.
+- `validationRules` adds custom link validation checks.
+- `maxPathDepth` limits graph traversal depth.
+- `similarityThreshold` filters weak similar-note matches.
+- `excludeFolders` removes folders from discovery calculations.
 
 Example:
 
 ```text
 maxPathDepth = 3
 
-Allowed:
+Allowed path:
 Topic A -> Topic B -> Topic C -> Topic D
 
-Not allowed:
-Topic A -> B -> C -> D -> E
-because that is 4 link steps
+Rejected path:
+Topic A -> Topic B -> Topic C -> Topic D -> Topic E
 ```
+
+The rejected path has four link hops, which exceeds depth `3`.
 
 ## Sequence Detection
 
 File: `src/navigation/sequence-detector.ts`
 
-This class answers one question:
+`SequenceDetector` determines whether a file belongs to an ordered sequence.
 
-```text
-Does this note belong to an ordered group of notes?
-```
-
-Examples of ordered groups:
-
-```text
-Chapter 1.md
-Chapter 2.md
-Chapter 10.md
-```
-
-```text
-2026-05-27.md
-2026-05-28.md
-2026-05-29.md
-```
-
-The main method is:
+Main API:
 
 ```typescript
 detectSequence(file: TFile): SequenceInfo | null
 ```
 
-It returns either:
+Result shape:
+
+```typescript
+interface SequenceInfo {
+  files: TFile[];
+  currentIndex: number;
+  pattern: string;
+  type: 'numeric' | 'date' | 'custom';
+}
+```
+
+Example result for `Chapter 2.md`:
 
 ```typescript
 {
-  files: [Chapter 1, Chapter 2, Chapter 10],
+  files: [chapter1File, chapter2File, chapter10File],
   currentIndex: 1,
   pattern: "Chapter ",
   type: "numeric"
 }
 ```
 
-or `null` if no sequence is found.
-
-### How Detection Works
-
-The code checks patterns in this order:
-
-```text
-1. Date sequence
-2. Numeric sequence
-3. Custom sequence
-```
-
-Date runs first on purpose. A filename like `2026-05-28.md` has numbers in it, but it should be treated as a date, not as a generic number.
-
-Pseudocode:
+Detection priority:
 
 ```typescript
 const sequence =
-  detectDateSequence(file)
-  ?? detectNumericSequence(file)
-  ?? detectCustomSequence(file);
+  this.detectDateSequence(file)
+  ?? this.detectNumericSequence(file)
+  ?? this.detectCustomSequence(file);
 ```
 
-### Numeric Example
+Date detection runs first because ISO date names contain numbers. Without this priority, `2026-05-28.md` could be incorrectly treated as a generic numeric sequence.
 
-Files in the same folder:
+### Numeric Detection
+
+Numeric detection handles names like:
 
 ```text
-Chapter 10.md
 Chapter 1.md
 Chapter 2.md
-Random.md
+Chapter 10.md
 ```
 
 The detector:
 
-1. Looks at `Chapter 1.md`.
-2. Sees the pattern `Chapter ` plus number `1`.
-3. Finds other files in the same folder with the same pattern.
-4. Sorts them naturally.
+1. Parses the active file basename with `parseNumericPattern`.
+2. Scans markdown files in the same folder.
+3. Keeps files with matching prefix/suffix.
+4. Natural-sorts the matching filenames.
+5. Returns the sorted files and current index.
 
-Result:
+Natural sort is required because plain string sorting can produce this:
 
 ```text
-Chapter 1.md
-Chapter 2.md
-Chapter 10.md
+Chapter 1
+Chapter 10
+Chapter 2
 ```
 
-Natural sort matters because normal text sorting would often put `Chapter 10` before `Chapter 2`.
+Natural sort produces the expected order:
 
-### Date Example
+```text
+Chapter 1
+Chapter 2
+Chapter 10
+```
+
+### Date Detection
+
+Date detection handles:
+
+```text
+2026-05-27.md
+2026-05-28.md
+2026-05-29.md
+```
+
+`parseDatePattern` validates real calendar dates. This matters because JavaScript can normalize invalid dates if you are not careful.
+
+Example:
+
+```typescript
+parseDatePattern('2026-02-28'); // valid
+parseDatePattern('2026-02-31'); // null
+```
+
+### Custom Detection
+
+Custom detection uses enabled regex patterns from settings.
+
+Example custom config:
+
+```typescript
+{
+  name: "Episode",
+  regex: "^Episode [A-Z]$",
+  enabled: true
+}
+```
 
 Files:
 
 ```text
-2026-05-29.md
-2026-05-27.md
-2026-05-28.md
+Episode A.md
+Episode B.md
+Episode C.md
 ```
 
-The detector parses each date and sorts by real calendar time.
+If the active file matches the regex and at least two files in the same folder match, the detector returns a custom sequence.
 
-Result:
-
-```text
-2026-05-27.md
-2026-05-28.md
-2026-05-29.md
-```
-
-### Cache
+### Cache Behavior
 
 File: `src/utils/cache.ts`
 
-Sequence detection scans files in the vault. That can be repeated often, so results are cached for one minute.
+Sequence detection can scan many files. `SequenceDetector` caches results by file path for one minute:
 
 ```text
-First call:
-scan files -> compute sequence -> save in cache
-
-Second call soon after:
-read sequence from cache
+cache key   = file.path
+cache value = SequenceInfo
+max age     = 60 seconds
 ```
 
-When files are created, renamed, or deleted, `main.ts` clears or updates the cache.
+`main.ts` clears or invalidates cache entries when files are created, renamed, or deleted.
 
 ## Sequence Navigation
 
 File: `src/navigation/navigator.ts`
 
-This class opens the previous or next file in a sequence.
+`Navigator` opens adjacent files in a detected sequence.
 
-Example:
-
-```text
-Chapter 1.md
-Chapter 2.md
-Chapter 3.md
-```
-
-If the active file is `Chapter 2.md`:
-
-```text
-Navigate next     -> Chapter 3.md
-Navigate previous -> Chapter 1.md
-```
-
-Simplified logic:
+Main methods:
 
 ```typescript
-const activeFile = app.workspace.getActiveFile();
-const sequence = detector.detectSequence(activeFile);
-const nextFile = sequence.files[sequence.currentIndex + 1];
-await app.workspace.getLeaf(false).openFile(nextFile);
+navigateNext(): Promise<boolean>
+navigatePrevious(): Promise<boolean>
+navigateToIndex(index: number): Promise<boolean>
+getSequenceInfo(): SequenceInfo | null
 ```
 
-If circular navigation is enabled:
+Core flow:
+
+```typescript
+const activeFile = this.app.workspace.getActiveFile();
+const sequence = this.detector.detectSequence(activeFile);
+const nextIndex = this.getNextIndex(sequence);
+await this.openFile(sequence.files[nextIndex]);
+```
+
+Boundary behavior:
 
 ```text
-Chapter 3 next -> Chapter 1
-Chapter 1 previous -> Chapter 3
+circularNavigation = false
+  first previous -> fail with Notice
+  last next      -> fail with Notice
+
+circularNavigation = true
+  first previous -> last file
+  last next      -> first file
 ```
 
-If circular navigation is disabled:
-
-```text
-Chapter 3 next -> show "Already at the end"
-Chapter 1 previous -> show "Already at the beginning"
-```
+This class does not decide how sequences are detected. It depends on `SequenceDetector` for that.
 
 ## Sequence Link Insertion
 
 File: `src/navigation/link-inserter.ts`
 
-This class writes previous and next links inside note text.
+`LinkInserter` writes previous/next links into note content.
 
-For `Chapter 2.md`, it can add:
+Generated block for a middle file:
 
 ```markdown
 ---
@@ -299,65 +321,71 @@ For `Chapter 2.md`, it can add:
 <- [[Chapter 1]] | [[Chapter 3]] ->
 ```
 
-The method `insertSequenceLinks(file)` works like this:
+Update flow:
 
 ```text
-1. Detect the sequence for this file.
-2. Find the previous note and next note.
-3. Read the current note text.
-4. Remove an old LinkWeaver navigation block if one exists.
-5. Add the new navigation block at the bottom.
-6. Save the note.
+detect sequence
+  -> compute previous and next TFile
+  -> read note content
+  -> remove existing LinkWeaver navigation block
+  -> append new navigation block
+  -> vault.modify(file, newContent)
 ```
 
-Why remove the old block first?
+The cleanup step prevents duplicate navigation blocks. It scans from the bottom of the file for a horizontal rule followed by content that looks like previous/next navigation.
 
-If the plugin did not remove it, every update would add another copy:
+Relevant methods:
 
-```markdown
----
-<- [[Chapter 1]] | [[Chapter 3]] ->
-
----
-<- [[Chapter 1]] | [[Chapter 3]] ->
+```typescript
+insertSequenceLinks(file: TFile): Promise<boolean>
+updateAllSequenceLinks(): Promise<boolean>
+removeExistingLinks(content: string): string
+generateNavigationLinks(previousFile, nextFile): string
 ```
-
-The code avoids that by checking for a horizontal rule and a navigation-looking block.
 
 ## Link Management
 
 File: `src/links/link-manager.ts`
 
-This class reads Obsidian's metadata cache. The metadata cache is Obsidian's index of links it already found in notes.
+`LinkManager` uses Obsidian's `metadataCache` instead of reparsing markdown manually. Obsidian already indexes links, embeds, positions, and resolved destinations.
 
-Important idea:
-
-```text
-The plugin does not manually parse every markdown link from scratch.
-It asks Obsidian: "What links did you find in this file?"
-```
-
-Example metadata link:
+Typical metadata entry:
 
 ```typescript
 {
   link: "Topic B",
   displayText: "read this next",
-  position: { start: { line: 4 } }
+  position: {
+    start: { line: 4 }
+  }
 }
 ```
 
-The plugin then asks Obsidian:
+Resolving a link:
 
 ```typescript
-metadataCache.getFirstLinkpathDest("Topic B", sourceFile.path)
+const targetFile = this.app.metadataCache.getFirstLinkpathDest(
+  link.link,
+  sourceFile.path
+);
 ```
 
-That returns the target file if Obsidian can resolve the link.
+If `targetFile` is `null`, the link is unresolved.
 
-### Link Validation
+### Validation
 
-Validation checks whether links resolve.
+Validation transforms metadata links into `LinkInfo` objects.
+
+```typescript
+interface LinkInfo {
+  sourceFile: TFile;
+  linkText: string;
+  displayText: string;
+  line: number;
+  isResolved: boolean;
+  targetFile: TFile | null;
+}
+```
 
 Example:
 
@@ -366,155 +394,150 @@ Example:
 [[Missing Note]]
 ```
 
-If `Topic B.md` exists but `Missing Note.md` does not:
+Result:
 
 ```text
-Topic B      -> resolved
-Missing Note -> unresolved
+Topic B      -> isResolved: true
+Missing Note -> isResolved: false
 ```
 
-### Link Stats
+`validateAllLinks()` scans all markdown files. `validateFileLinks(file)` scans one file.
 
-For one note, the plugin can count:
+### Link Statistics
+
+`getLinkStats(file)` returns:
+
+```typescript
+{
+  outgoing: number;
+  incoming: number;
+  unresolved: number;
+}
+```
+
+Definitions:
+
+- Outgoing: links from this file to another file.
+- Incoming: links from other files to this file.
+- Unresolved: outgoing links that do not resolve.
+
+Incoming link counts require scanning other files and resolving their links back to the target file.
+
+### Orphan Notes And Hub Pages
+
+An orphan note has no outgoing links and no incoming links.
+
+```typescript
+getOrphanedNotes(): TFile[]
+```
+
+A hub page is a note with many total connections:
+
+```typescript
+getHubPages(threshold = 10): Array<{ file: TFile; linkCount: number }>
+```
+
+The hub score is:
 
 ```text
-outgoing links   = links from this note to other notes
-incoming links   = links from other notes to this note
-unresolved links = links from this note that do not resolve
+incoming links + outgoing links
 ```
-
-Example:
-
-```text
-Topic A links to Topic B and Missing Note.
-Topic C links to Topic A.
-
-Topic A stats:
-outgoing = 2
-incoming = 1
-unresolved = 1
-```
-
-### Orphan Notes
-
-An orphan note has:
-
-```text
-0 outgoing links
-0 incoming links
-```
-
-That means it is disconnected from the vault graph.
 
 ## Batch Link Operations
 
 File: `src/links/batch-operations.ts`
 
-This class changes links across many files.
+`BatchOperations` performs controlled text replacement across vault files.
 
-Example request:
-
-```text
-Replace every link to "Old Note" with "New Note"
-```
-
-It handles both Obsidian wiki links:
+It supports wiki links:
 
 ```markdown
 [[Old Note]]
-[[Old Note|custom text]]
+[[Old Note|alias]]
 ```
 
 and Markdown links:
 
 ```markdown
-[custom text](Old Note)
+[alias](Old Note)
 ```
 
 After replacement:
 
 ```markdown
 [[New Note]]
-[[New Note|custom text]]
-[custom text](New Note)
+[[New Note|alias]]
+[alias](New Note)
 ```
 
-### Dry Run Preview
-
-`previewChanges(oldLink, newLink)` uses the same replacement logic but does not save files.
-
-That lets the user see:
-
-```text
-File A.md: 3 changes
-File B.md: 1 change
-```
-
-before applying the update.
-
-### Undo
-
-Before writing changes, the code saves the old content in memory.
-
-Simplified:
+Main methods:
 
 ```typescript
-undoStack.push({
-  file,
-  oldContent,
-  newContent
-});
+batchReplaceLink(oldLink, newLink, dryRun): Promise<BatchResult>
+previewChanges(oldLink, newLink): Promise<Array<{ file: TFile; changes: number }>>
+undoLastOperation(): Promise<boolean>
 ```
 
-If the user runs undo, the plugin writes `oldContent` back to each file.
+`dryRun` controls whether files are written:
 
-The undo stack keeps the last 10 batches.
+```text
+dryRun = true
+  calculate changes only
+
+dryRun = false
+  write changes and store undo data
+```
+
+Undo is in-memory only. It restores file content from the last applied batch while the plugin session is still active.
 
 ## Link Previews
 
 File: `src/links/link-preview.ts`
 
-This class shows nearby text around a link so the user can understand the link without opening the note.
+`LinkPreviewManager` builds contextual snippets around links.
 
-Example note:
+Preview types:
 
-```markdown
-This project connects to [[Topic B]] because both notes discuss testing.
-The next paragraph explains the details.
-```
+- `outgoing`: resolved links from the active file.
+- `incoming`: links from other files to the active file.
+- `unresolved`: links from the active file that do not resolve.
 
-Preview context might be:
+Context generation:
 
 ```text
-This project connects to [[Topic B]] because both notes discuss testing.
-The next paragraph explains the details.
+read file
+  -> split into lines
+  -> start at link line
+  -> add lines before and after until linkPreviewLength is reached
+  -> truncate if needed
 ```
 
-The plugin supports three preview types:
-
-- `outgoing`: links from the active note to other notes.
-- `incoming`: links from other notes to the active note.
-- `unresolved`: links that do not resolve to an existing note.
+This gives the modal enough surrounding text to make the link useful without opening every note.
 
 ## Phase 3 Discovery
 
 File: `src/discovery/path-finder.ts`
 
-Discovery features answer graph questions.
+The discovery module treats the vault as a directed graph:
 
-A graph is just notes and links:
+```text
+note = node
+resolved link = directed edge
+```
+
+Example:
 
 ```text
 Topic A -> Topic B -> Topic C -> Topic D
 ```
 
-Each note is a node. Each link is an edge.
+`Topic A` has an outgoing edge to `Topic B`. `Topic B` has an outgoing edge to `Topic C`.
 
 ## Path Finding
 
-`findShortestPath(sourceFile, targetFile)` finds the shortest chain of links between two notes.
+`findShortestPath(sourceFile, targetFile)` finds the shortest directed path from one note to another.
 
-Example vault:
+Example:
 
 ```text
 Topic A links to Topic B
@@ -522,106 +545,91 @@ Topic B links to Topic C
 Topic C links to Topic D
 ```
 
-If the user asks:
+Query:
 
 ```text
-Source: Topic A
-Target: Topic D
+source = Topic A
+target = Topic D
 ```
 
-The result is:
+Result:
 
 ```text
 Topic A -> Topic B -> Topic C -> Topic D
 ```
 
-### How Shortest Path Works
+### Breadth-First Search
 
-The code uses breadth-first search. That means it checks all close paths before trying longer paths.
+Shortest path uses breadth-first search. BFS explores all paths of length `1`, then length `2`, then length `3`, and so on. The first time BFS reaches the target, that route is guaranteed to be shortest in an unweighted graph.
 
-Think of it like this:
-
-```text
-Start at Topic A
-
-Distance 1:
-Topic B
-Topic X
-
-Distance 2:
-Topic C
-Topic Y
-
-Distance 3:
-Topic D
-```
-
-The first time it finds the target, that path is the shortest.
-
-Simplified code idea:
+Simplified version:
 
 ```typescript
-const visitedPaths = new Set([sourceFile.path]);
-const searchQueue = [[sourceFile]];
+const visitedPaths = new Set<string>([sourceFile.path]);
+const searchQueue: TFile[][] = [[sourceFile]];
 
 while (searchQueue.length > 0) {
   const currentPath = searchQueue.shift();
   const currentFile = currentPath[currentPath.length - 1];
 
   for (const linkedFile of getOutgoingTargets(currentFile)) {
+    if (visitedPaths.has(linkedFile.path)) {
+      continue;
+    }
+
     const nextPath = [...currentPath, linkedFile];
 
     if (linkedFile.path === targetFile.path) {
       return nextPath;
     }
 
+    visitedPaths.add(linkedFile.path);
     searchQueue.push(nextPath);
   }
 }
 ```
 
-Why `visitedPaths` exists:
+Why the visited set matters:
 
 ```text
-Topic A -> Topic B -> Topic A -> Topic B -> ...
+Topic A -> Topic B -> Topic A
 ```
 
-Without a visited set, the search could loop forever.
+Without `visitedPaths`, cycles can cause repeated work or infinite traversal.
 
 ## All Paths
 
-`findAllPaths(sourceFile, targetFile)` finds every path up to the configured depth.
+`findAllPaths(sourceFile, targetFile)` returns every acyclic path up to `maxPathDepth`.
 
-Example:
-
-```text
-Topic A -> Topic B -> Topic D
-Topic A -> Topic C -> Topic D
-```
-
-Both paths are valid:
+Example graph:
 
 ```text
 Topic A -> Topic B -> Topic D
 Topic A -> Topic C -> Topic D
 ```
 
-This is useful when there is more than one way ideas connect.
+Results:
 
-The code avoids cycles by tracking which notes are already in the current path.
+```text
+Topic A -> Topic B -> Topic D
+Topic A -> Topic C -> Topic D
+```
+
+This uses depth-limited recursive traversal. The method tracks the current path so the same note is not revisited within a single route.
 
 ## Similar Notes
 
-`findSimilarNotes(sourceFile)` finds notes that point to many of the same notes as the active note.
+`findSimilarNotes(sourceFile)` ranks notes by overlap in resolved outgoing links. It does not compare note body text. It compares the notes each candidate links to.
 
-This feature does not compare full note text. It compares outgoing links.
+This is useful because link overlap often indicates related concepts. Two notes that both link to `Testing`, `Obsidian`, and `Automation` are probably related even if their titles are different.
 
-Example:
+### Input Model
+
+Assume:
 
 ```markdown
 # Topic A
 
-Links:
 [[Testing]]
 [[Obsidian]]
 [[Automation]]
@@ -630,128 +638,95 @@ Links:
 ```markdown
 # Topic B
 
-Links:
 [[Testing]]
 [[Obsidian]]
 [[Plugins]]
 ```
 
-`Topic A` and `Topic B` are similar because they both link to:
+The outgoing target sets are:
 
 ```text
-Testing
-Obsidian
+Topic A targets = { Testing, Obsidian, Automation }
+Topic B targets = { Testing, Obsidian, Plugins }
 ```
 
-They do not both link to:
+### Scoring Model
+
+The implementation uses Jaccard similarity:
 
 ```text
-Automation
-Plugins
+score = intersection size / union size
 ```
 
-### How Similarity Is Scored
-
-The code uses Jaccard similarity.
-
-In simple words:
+For `Topic A` and `Topic B`:
 
 ```text
-similarity score = shared links / all unique links
+intersection = { Testing, Obsidian }
+union        = { Testing, Obsidian, Automation, Plugins }
+
+score = 2 / 4 = 0.5
 ```
 
-For the example above:
+Interpretation:
 
 ```text
-Topic A links:
-Testing, Obsidian, Automation
-
-Topic B links:
-Testing, Obsidian, Plugins
-
-Shared links:
-Testing, Obsidian
-
-All unique links:
-Testing, Obsidian, Automation, Plugins
-
-Score:
-2 shared / 4 total = 0.5
+0.0 = no shared outgoing targets
+0.5 = half overlap by union size
+1.0 = identical outgoing target sets
 ```
 
-So the score is:
+### Filtering
+
+`similarityThreshold` controls which candidates are returned.
 
 ```text
-0.5 = 50% similar
+similarityThreshold = 0.5
+
+score 0.75 -> included
+score 0.50 -> included
+score 0.49 -> excluded
 ```
 
-### Why This Is Useful
+Unresolved links do not count because `getOutgoingTargets()` only includes links Obsidian resolves to real files.
 
-If two notes link to many of the same ideas, they are probably related.
+### Implementation Flow
 
-Example:
-
-```text
-Note A links to:
-JavaScript, Testing, Obsidian
-
-Note B links to:
-JavaScript, Testing, Obsidian
-
-These notes are probably close in meaning.
-```
-
-But:
-
-```text
-Note C links to:
-Cooking, Travel, Mexico
-
-Note C is probably not similar to Note A.
-```
-
-### What `findSimilarNotes` Does Step By Step
-
-Source note:
-
-```text
-Topic A
-```
-
-The code:
-
-```text
-1. Get every resolved outgoing link from Topic A.
-2. Look at every other markdown file in the vault.
-3. Skip files in excluded folders.
-4. Get that file's resolved outgoing links.
-5. Count shared links.
-6. Count all unique links.
-7. Compute shared / unique.
-8. Keep only notes above similarityThreshold.
-9. Sort best matches first.
-```
-
-Simplified code idea:
+Simplified implementation:
 
 ```typescript
-const sourceTargets = getOutgoingTargetPaths(sourceFile);
+const sourceTargets = this.getOutgoingTargetPaths(sourceFile);
 
-for (const candidateFile of allMarkdownFiles) {
-  const candidateTargets = getOutgoingTargetPaths(candidateFile);
-  const sharedLinks = linksThatAppearInBothSets(sourceTargets, candidateTargets);
-  const combinedLinks = linksThatAppearInEitherSet(sourceTargets, candidateTargets);
-  const score = sharedLinks.length / combinedLinks.size;
+return this.app.vault.getMarkdownFiles()
+  .filter(candidateFile => candidateFile.path !== sourceFile.path)
+  .filter(candidateFile => !this.isExcluded(candidateFile))
+  .map(candidateFile => this.scoreSimilarity(candidateFile, sourceTargets))
+  .filter(candidate => candidate !== null && candidate.score >= threshold)
+  .sort((firstNote, secondNote) => secondNote.score - firstNote.score);
+```
 
-  if (score >= similarityThreshold) {
-    results.push({ file: candidateFile, score, sharedLinks });
-  }
+`scoreSimilarity()` does the set math:
+
+```typescript
+const candidateTargets = this.getOutgoingTargetPaths(candidateFile);
+const sharedLinks = [...sourceTargets]
+  .filter(targetPath => candidateTargets.has(targetPath));
+const combinedTargets = new Set([...sourceTargets, ...candidateTargets]);
+const score = sharedLinks.length / combinedTargets.size;
+```
+
+Return shape:
+
+```typescript
+interface SimilarNote {
+  file: TFile;
+  score: number;
+  sharedLinks: string[];
 }
 ```
 
-### Concrete Similarity Example
+### Concrete Example
 
-Assume the setting is:
+Settings:
 
 ```text
 similarityThreshold = 0.5
@@ -768,97 +743,78 @@ Topic C links to: Cooking, Travel
 Compare `Topic A` to `Topic B`:
 
 ```text
-shared = Testing, Obsidian
-unique = Testing, Obsidian, Automation, Plugins
-score = 2 / 4 = 0.5
-```
-
-Result:
-
-```text
-Topic B is shown because 0.5 is equal to the threshold.
+intersection = Testing, Obsidian
+union        = Testing, Obsidian, Automation, Plugins
+score        = 2 / 4 = 0.5
+result       = included
 ```
 
 Compare `Topic A` to `Topic C`:
 
 ```text
-shared = none
-unique = Testing, Obsidian, Automation, Cooking, Travel
-score = 0 / 5 = 0
+intersection = none
+union        = Testing, Obsidian, Automation, Cooking, Travel
+score        = 0 / 5 = 0
+result       = excluded
 ```
 
-Result:
+## Outgoing Target Resolution
 
-```text
-Topic C is hidden because 0 is below the threshold.
-```
+`getOutgoingTargets(file)` is shared by path finding and similar-note scoring.
 
-## Outgoing Targets
-
-`getOutgoingTargets(file)` is a helper used by both path finding and similar-note scoring.
-
-It turns Obsidian link text into real files.
-
-Example:
+It converts raw Obsidian link strings into resolved `TFile` objects:
 
 ```markdown
 [[Topic B]]
 [[Missing Note]]
 ```
 
-The helper asks Obsidian to resolve each link.
-
-Result:
+Resolution result:
 
 ```text
-Topic B      -> real TFile
-Missing Note -> ignored because it does not resolve
+Topic B      -> included as TFile
+Missing Note -> skipped because it resolves to null
 ```
 
-This is why discovery features work with real vault links instead of raw text only.
+This keeps graph logic based on actual files, not unresolved text labels.
 
 ## UI Layer
 
 File: `src/ui/modals.ts`
 
-The UI layer shows results but does not own the main logic.
+Modal classes render results and collect input. They should not contain heavy business logic.
 
-Example for path finding:
+Examples:
 
 ```text
 PathFinderModal
-  asks user for source note and target note
+  collects source and target input
+  resolves those inputs to TFile objects
   calls PathFinder.findShortestPath(...)
-  displays the path
+  renders the returned path
 ```
-
-Example for similar notes:
 
 ```text
 SimilarNotesModal
-  receives already-scored similar notes
-  shows file path, percent score, and shared-link count
+  receives SimilarNote[]
+  renders file path, percentage score, and shared-link count
 ```
 
-This split is useful because:
-
-- Logic can be tested without UI.
-- UI can stay simple.
-- Bugs are easier to locate.
+The modal layer depends on service outputs. Services should not depend on modal classes.
 
 ## Test Layer
 
 Folder: `test/`
 
-The tests use a fake Obsidian module in `test/mocks/obsidian.ts`.
+Tests use `test/mocks/obsidian.ts` as a lightweight replacement for the Obsidian API. This allows service logic to run in Vitest without opening Obsidian.
 
-That means tests can create fake files like:
+Example fake file:
 
 ```typescript
 const topicA = new TFile('Research/Topic A.md');
 ```
 
-and fake link metadata like:
+Example fake metadata:
 
 ```typescript
 getFileCache: () => ({
@@ -868,32 +824,31 @@ getFileCache: () => ({
 })
 ```
 
-The tests then check real plugin behavior without opening Obsidian.
+Current test coverage focuses on:
 
-Current test files:
+- Parsing filenames and dates.
+- Natural sorting and cache expiry.
+- Sequence detection.
+- Batch replacement and undo.
+- Path finding and similar-note scoring.
 
-- `test/parser.test.ts`
-- `test/sorter-cache-patterns.test.ts`
-- `test/sequence-detector.test.ts`
-- `test/path-finder.test.ts`
-- `test/batch-operations.test.ts`
+## Recommended Reading Order
 
-## How To Read The Code
+If you are onboarding to this codebase, read these files in order:
 
-If you are new to this repo, read in this order:
+1. `src/main.ts`: lifecycle, dependency wiring, command registration.
+2. `src/settings.ts`: configuration contract.
+3. `src/navigation/sequence-detector.ts`: sequence detection.
+4. `src/navigation/navigator.ts`: sequence movement.
+5. `src/discovery/path-finder.ts`: graph traversal and similarity scoring.
+6. `src/links/link-manager.ts`: metadata-based link validation and stats.
+7. `src/ui/modals.ts`: how results are displayed in Obsidian.
 
-1. `src/main.ts`: see which services exist and which commands call them.
-2. `src/settings.ts`: understand the settings that control behavior.
-3. `src/navigation/sequence-detector.ts`: understand sequence detection.
-4. `src/discovery/path-finder.ts`: understand Phase 3 discovery.
-5. `src/links/link-manager.ts`: understand link validation and stats.
-6. `src/ui/modals.ts`: see how results are shown in Obsidian.
-
-The key pattern to remember:
+The most important boundary:
 
 ```text
-main.ts wires things together.
-service classes do the logic.
-modals show results.
-tests fake Obsidian so the logic can be checked here.
+main.ts wires services together.
+services own behavior.
+modals render behavior.
+tests exercise services with mocked Obsidian APIs.
 ```
