@@ -13,6 +13,18 @@ LinkWeaver is an Obsidian plugin for moving through related notes and maintainin
 - Shows outgoing, incoming, and unresolved links with nearby context.
 - Finds shortest paths between notes and similar notes based on shared outgoing links.
 
+Example of similar notes:
+
+```text
+Note A links to: Testing, Obsidian, Automation
+Note B links to: Testing, Obsidian, Plugins
+
+They share Testing and Obsidian.
+Score = 2 shared links / 4 unique links = 0.5
+```
+
+The plugin shows notes when the score is at or above the `similarityThreshold` setting.
+
 ## Current Commands
 
 - `Navigate to next in sequence`

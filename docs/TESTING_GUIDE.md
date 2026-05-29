@@ -153,6 +153,71 @@ Expected:
 
 - Notes that share `Shared Concept` appear above the configured similarity threshold.
 
+What this means:
+
+```text
+Topic B links to:
+Topic C
+Shared Concept
+
+Topic C links to:
+Topic D
+Shared Concept
+```
+
+Both notes link to `Shared Concept`, so they share one target.
+
+The plugin compares shared outgoing links like this:
+
+```text
+score = shared links / all unique links
+```
+
+For `Topic B` and `Topic C`:
+
+```text
+shared links:
+Shared Concept
+
+all unique links:
+Topic C
+Topic D
+Shared Concept
+
+score:
+1 / 3 = 0.33
+```
+
+If your `similarityThreshold` setting is `0.5`, that pair will not show. If you lower the threshold to `0.3`, it should show.
+
+To make an obvious manual test, edit `Research/Topic D.md` so it shares both targets with `Topic B`:
+
+```markdown
+Links: [[Topic C]] and [[Shared Concept]].
+```
+
+Then open `Research/Topic B.md` and run `Find similar notes`.
+
+Why this works:
+
+```text
+Topic B links to:
+Topic C
+Shared Concept
+
+Topic D links to:
+Topic C
+Shared Concept
+```
+
+Both notes have the same resolved outgoing links, so the score is:
+
+```text
+2 shared links / 2 unique links = 1.0
+```
+
+That means `Topic D` should show as `100%` similar to `Topic B`.
+
 ### Batch Replacement
 
 Use `Batch replace link`.
