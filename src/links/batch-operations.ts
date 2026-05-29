@@ -1,233 +1,179 @@
 import { App, TFile, Notice } from 'obsidian';
 
 export interface BatchOperation {
-    type: 'replace' | 'rename' | 'delete';
-    oldLink: string;
-    newLink?: string;
-    files: TFile[];
+	type: 'replace' | 'rename' | 'delete';
+	oldLink: string;
+	newLink?: string;
+	files: TFile[];
 }
 
 export interface BatchResult {
-    success: number;
-    failed: number;
-    operations: Array<{
-        file: TFile;
-        oldContent: string;
-        newContent: string;
-        success: boolean;
-    }>;
+	success: number;
+	failed: number;
+	operations: Array<{
+		file: TFile;
+		oldContent: string;
+		newContent: string;
+		success: boolean;
+	}>;
+}
+
+interface UndoEntry {
+	timestamp: number;
+	operations: Array<{
+		file: TFile;
+		oldContent: string;
+		newContent: string;
+	}>;
 }
 
 export class BatchOperations {
-    // mark app readonly since it's never reassigned
-    private readonly app: App;
-    private undoStack: Array<{
-        timestamp: number;
-        operations: Array<{
-            file: TFile;
-            oldContent: string;
-            newContent: string;
-        }>;
-    }> = [];
+	private readonly app: App;
+	private undoStack: UndoEntry[] = [];
 
-    constructor(app: App) {
-        this.app = app;
-    }
+	constructor(app: App) {
+		this.app = app;
+	}
 
-    /**
-     * Replace all instances of a link across the vault
-     */
-    async batchReplaceLink(
-        oldLink: string, 
-        newLink: string, 
-        dryRun: boolean = false
-    ): Promise<BatchResult> {
-        const files = this.app.vault.getMarkdownFiles();
-        const result: BatchResult = {
-            success: 0,
-            failed: 0,
-            operations: []
-        };
+	async batchReplaceLink(oldLink: string, newLink: string, dryRun: boolean = false): Promise<BatchResult> {
+		const result: BatchResult = {
+			success: 0,
+			failed: 0,
+			operations: []
+		};
+		const undoOperations: UndoEntry['operations'] = [];
 
-        const batchOps: Array<{ file: TFile; oldContent: string; newContent: string }> = [];
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			try {
+				const content = await this.app.vault.read(file);
+				const newContent = this.replaceLinks(content, oldLink, newLink);
 
-        for (const file of files) {
-            try {
-                const content = await this.app.vault.read(file);
-                
-                // Use String.raw to avoid double-escaping backslashes in the template
-                const wikiLinkRegex = new RegExp(String.raw`\[\[${this.escapeRegex(oldLink)}(\|[^\]]+)?\]\]`, 'g');
-                const mdLinkRegex = new RegExp(String.raw`\[([^\]]+)\]\(${this.escapeRegex(oldLink)}\)`, 'g');
-                
-                let newContent = content;
-                // prefer replaceAll for clarity when dealing with global replacements
-                newContent = newContent.replace(wikiLinkRegex, `[[${newLink}$1]]`);
-                newContent = newContent.replace(mdLinkRegex, `[$1](${newLink})`);
+				if (content === newContent) {
+					continue;
+				}
 
-                if (content !== newContent) {
-                    if (!dryRun) {
-                        await this.app.vault.modify(file, newContent);
-                        batchOps.push({ file, oldContent: content, newContent });
-                    }
-                    
-                    result.operations.push({
-                        file,
-                        oldContent: content,
-                        newContent,
-                        success: true
-                    });
-                    result.success++;
-                }
-            } catch (error) {
-                result.failed++;
-                console.error(`batchReplaceLink failed for ${file.path}:`, error);
-                result.operations.push({
-                    file,
-                    oldContent: '',
-                    newContent: '',
-                    success: false
-                });
-            }
-        }
+				if (!dryRun) {
+					await this.app.vault.modify(file, newContent);
+					undoOperations.push({ file, oldContent: content, newContent });
+				}
 
-        // Save to undo stack if not dry run
-        if (!dryRun && batchOps.length > 0) {
-            this.undoStack.push({
-                timestamp: Date.now(),
-                operations: batchOps
-            });
-            // Keep only last 10 operations
-            if (this.undoStack.length > 10) {
-                this.undoStack.shift();
-            }
-        }
+				result.operations.push({ file, oldContent: content, newContent, success: true });
+				result.success++;
+			} catch (error) {
+				result.failed++;
+				console.error(`batchReplaceLink failed for ${file.path}:`, error);
+				result.operations.push({ file, oldContent: '', newContent: '', success: false });
+			}
+		}
 
-        return result;
-    }
+		if (!dryRun && undoOperations.length > 0) {
+			this.rememberUndoEntry(undoOperations);
+		}
 
-    /**
-     * Rename all instances of a link (handles the link target being renamed)
-     */
-    async renameAllInstances(
-        oldPath: string,
-        newPath: string,
-        dryRun: boolean = false
-    ): Promise<BatchResult> {
-        const oldBaseName = this.getBaseName(oldPath);
-        const newBaseName = this.getBaseName(newPath);
+		return result;
+	}
 
-        return this.batchReplaceLink(oldBaseName, newBaseName, dryRun);
-    }
+	async renameAllInstances(oldPath: string, newPath: string, dryRun: boolean = false): Promise<BatchResult> {
+		return this.batchReplaceLink(
+			this.getBaseName(oldPath),
+			this.getBaseName(newPath),
+			dryRun
+		);
+	}
 
-    /**
-     * Update links when a file is renamed (auto-triggered)
-     */
-    async updateLinksOnRename(
-        oldPath: string,
-        newPath: string
-    ): Promise<void> {
-        const result = await this.renameAllInstances(oldPath, newPath, false);
-        if (result.success > 0) {
-            // use the Notice and keep a reference (so linter doesn't flag unused instantiation)
-            new Notice(`Updated ${result.success} link(s) to ${this.getBaseName(newPath)}`);
-            // we intentionally don't hide it immediately
-        }
-    }
+	async updateLinksOnRename(oldPath: string, newPath: string): Promise<void> {
+		const result = await this.renameAllInstances(oldPath, newPath, false);
+		if (result.success > 0) {
+			new Notice(`Updated ${result.success} link(s) to ${this.getBaseName(newPath)}`);
+		}
+	}
 
-    /**
-     * Undo the last batch operation
-     */
-    async undoLastOperation(): Promise<boolean> {
-        if (this.undoStack.length === 0) {
-           new Notice('No operations to undo');
-            return false;
-        }
+	async undoLastOperation(): Promise<boolean> {
+		if (this.undoStack.length === 0) {
+			new Notice('No operations to undo');
+			return false;
+		}
 
-        const lastOp = this.undoStack.pop();
-        if (!lastOp) return false;
+		const lastOperation = this.undoStack.pop();
+		if (!lastOperation) {
+			return false;
+		}
 
-        try {
-            for (const op of lastOp.operations) {
-                await this.app.vault.modify(op.file, op.oldContent);
-            }
-           new Notice(`Undid ${lastOp.operations.length} operation(s)`);
-			
-            return true;
-        } catch (error) {
-            // Handle the exception: log and notify the user
-            console.error('Failed to undo batch operation', error);
-            const message = error instanceof Error ? error.message : String(error);
-           	new Notice(`Failed to undo operation: ${message}`);
-            return false;
-        }
-    }
+		try {
+			for (const operation of lastOperation.operations) {
+				await this.app.vault.modify(operation.file, operation.oldContent);
+			}
 
-    /**
-     * Preview changes without applying them
-     */
-    async previewChanges(
-        oldLink: string,
-        newLink: string
-    ): Promise<Array<{ file: TFile; changes: number }>> {
-        const result = await this.batchReplaceLink(oldLink, newLink, true);
-        
-        return result.operations
-            .filter(op => op.success)
-            .map(op => ({
-                file: op.file,
-                changes: this.countLinkOccurrences(op.oldContent, oldLink)
-            }));
-    }
+			new Notice(`Undid ${lastOperation.operations.length} operation(s)`);
+			return true;
+		} catch (error) {
+			console.error('Failed to undo batch operation', error);
+			const message = error instanceof Error ? error.message : String(error);
+			new Notice(`Failed to undo operation: ${message}`);
+			return false;
+		}
+	}
 
-    /**
-     * Count occurrences of a link in content using RegExp.exec() loops
-     */
-    private countLinkOccurrences(content: string, link: string): number {
-        let count = 0;
+	async previewChanges(oldLink: string, newLink: string): Promise<Array<{ file: TFile; changes: number }>> {
+		const result = await this.batchReplaceLink(oldLink, newLink, true);
 
-        const wikiLinkRegex = new RegExp(String.raw`\[\[${this.escapeRegex(link)}(\|[^\]]+)?\]\]`, 'g');
-        // iterate using exec() without assigning to a throwaway variable
-        while (wikiLinkRegex.exec(content) !== null) {
-            count++;
-        }
+		return result.operations
+			.filter(operation => operation.success)
+			.map(operation => ({
+				file: operation.file,
+				changes: this.countLinkOccurrences(operation.oldContent, oldLink)
+			}));
+	}
 
-        const mdLinkRegex = new RegExp(String.raw`\[([^\]]+)\]\(${this.escapeRegex(link)}\)`, 'g');
-        while (mdLinkRegex.exec(content) !== null) {
-            count++;
-        }
+	getUndoHistory(): Array<{ timestamp: Date; operationCount: number }> {
+		return this.undoStack.map(undoEntry => ({
+			timestamp: new Date(undoEntry.timestamp),
+			operationCount: undoEntry.operations.length
+		}));
+	}
 
-        return count;
-    }
+	clearUndoHistory(): void {
+		this.undoStack = [];
+	}
 
-    /**
-     * Escape special regex characters
-     */
-    private escapeRegex(str: string): string {
-        return str.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\\$&`);
-    }
+	private replaceLinks(content: string, oldLink: string, newLink: string): string {
+		const wikiLinkRegex = new RegExp(String.raw`\[\[${this.escapeRegex(oldLink)}(\|[^\]]+)?\]\]`, 'g');
+		const markdownLinkRegex = new RegExp(String.raw`\[([^\]]+)\]\(${this.escapeRegex(oldLink)}\)`, 'g');
 
-    /**
-     * Get basename from path (without extension)
-     */
-    private getBaseName(path: string): string {
-        const name = path.split('/').pop() || path;
-        return name.replace(/\.md$/, '');
-    }
+		return content
+			.replace(wikiLinkRegex, `[[${newLink}$1]]`)
+			.replace(markdownLinkRegex, `[$1](${newLink})`);
+	}
 
-    /**
-     * Get undo history
-     */
-    getUndoHistory(): Array<{ timestamp: Date; operationCount: number }> {
-        return this.undoStack.map(op => ({
-            timestamp: new Date(op.timestamp),
-            operationCount: op.operations.length
-        }));
-    }
+	private countLinkOccurrences(content: string, link: string): number {
+		let count = 0;
+		const wikiLinkRegex = new RegExp(String.raw`\[\[${this.escapeRegex(link)}(\|[^\]]+)?\]\]`, 'g');
+		const markdownLinkRegex = new RegExp(String.raw`\[([^\]]+)\]\(${this.escapeRegex(link)}\)`, 'g');
 
-    /**
-     * Clear undo history
-     */
-    clearUndoHistory(): void {
-        this.undoStack = [];
-    }
+		while (wikiLinkRegex.exec(content) !== null) {
+			count++;
+		}
+
+		while (markdownLinkRegex.exec(content) !== null) {
+			count++;
+		}
+
+		return count;
+	}
+
+	private rememberUndoEntry(operations: UndoEntry['operations']): void {
+		this.undoStack.push({ timestamp: Date.now(), operations });
+		if (this.undoStack.length > 10) {
+			this.undoStack.shift();
+		}
+	}
+
+	private escapeRegex(value: string): string {
+		return value.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\\$&`);
+	}
+
+	private getBaseName(path: string): string {
+		const name = path.split('/').pop() || path;
+		return name.replace(/\.md$/, '');
+	}
 }

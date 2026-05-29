@@ -113,7 +113,7 @@ export class LinkPreviewManager extends Component {
 
 		const links = cache.links || [];
 		const embeds = cache.embeds || [];
-		const allLinks = [...links, ...embeds ?? []];
+		const allLinks = [...links, ...embeds];
 
 		for (const link of allLinks) {
 			const targetFile = this.app.metadataCache.getFirstLinkpathDest(link.link, file.path);

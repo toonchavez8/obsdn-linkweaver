@@ -33,7 +33,17 @@ export class Cache<K, V> {
 	}
 
 	has(key: K): boolean {
-		return this.get(key) !== null;
+		const entry = this.cache.get(key);
+		if (!entry) {
+			return false;
+		}
+
+		if (Date.now() - entry.timestamp > this.maxAge) {
+			this.cache.delete(key);
+			return false;
+		}
+
+		return true;
 	}
 
 	clear(): void {

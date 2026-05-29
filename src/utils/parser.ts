@@ -17,7 +17,7 @@ export function parseNumericPattern(basename: string): ParsedPattern | null {
 	if (pureNumberMatch) {
 		return {
 			prefix: '',
-			number: parseInt(pureNumberMatch[1]),
+			number: Number.parseInt(pureNumberMatch[1], 10),
 			suffix: '',
 			fullMatch: pureNumberMatch[0]
 		};
@@ -28,7 +28,7 @@ export function parseNumericPattern(basename: string): ParsedPattern | null {
 	if (prefixMatch) {
 		return {
 			prefix: prefixMatch[1],
-			number: parseInt(prefixMatch[2]),
+			number: Number.parseInt(prefixMatch[2], 10),
 			suffix: '',
 			fullMatch: prefixMatch[0]
 		};
@@ -39,7 +39,7 @@ export function parseNumericPattern(basename: string): ParsedPattern | null {
 	if (complexMatch) {
 		return {
 			prefix: complexMatch[1],
-			number: parseInt(complexMatch[2]),
+			number: Number.parseInt(complexMatch[2], 10),
 			suffix: complexMatch[3],
 			fullMatch: complexMatch[0]
 		};
@@ -52,23 +52,14 @@ export function parseNumericPattern(basename: string): ParsedPattern | null {
  * Parse a date from a filename
  */
 export function parseDatePattern(basename: string): Date | null {
-	// Try ISO format: YYYY-MM-DD
 	const isoMatch = basename.match(/(\d{4})-(\d{2})-(\d{2})/);
 	if (isoMatch) {
-		const date = new Date(isoMatch[0]);
-		if (!isNaN(date.getTime())) {
-			return date;
-		}
+		return createStrictDate(isoMatch[1], isoMatch[2], isoMatch[3]);
 	}
 
-	// Try compact format: YYYYMMDD
 	const compactMatch = basename.match(/(\d{4})(\d{2})(\d{2})/);
 	if (compactMatch) {
-		const dateStr = `${compactMatch[1]}-${compactMatch[2]}-${compactMatch[3]}`;
-		const date = new Date(dateStr);
-		if (!isNaN(date.getTime())) {
-			return date;
-		}
+		return createStrictDate(compactMatch[1], compactMatch[2], compactMatch[3]);
 	}
 
 	return null;
@@ -79,4 +70,21 @@ export function parseDatePattern(basename: string): Date | null {
  */
 export function getBasename(filename: string): string {
 	return filename.replace(/\.[^/.]+$/, '');
+}
+
+function createStrictDate(yearText: string, monthText: string, dayText: string): Date | null {
+	const year = Number.parseInt(yearText, 10);
+	const month = Number.parseInt(monthText, 10);
+	const day = Number.parseInt(dayText, 10);
+	const date = new Date(Date.UTC(year, month - 1, day));
+
+	if (
+		date.getUTCFullYear() !== year
+		|| date.getUTCMonth() !== month - 1
+		|| date.getUTCDate() !== day
+	) {
+		return null;
+	}
+
+	return date;
 }

@@ -21,9 +21,11 @@ export interface ValidationResult {
 
 export class LinkManager {
 	private readonly app: App;
+	private validationRules: ValidationRuleConfig[];
 
-	constructor(app: App) {
+	constructor(app: App, validationRules: ValidationRuleConfig[] = []) {
 		this.app = app;
+		this.validationRules = validationRules;
 	}
 
 	/**
@@ -39,7 +41,10 @@ export class LinkManager {
 			const cache = this.app.metadataCache.getFileCache(file);
 			if (!cache) continue;
 
-			const fileLinks = this.extractLinksFromCache(file, cache);
+			const fileLinks = this.applyValidationRules(
+				this.extractLinksFromCache(file, cache),
+				this.validationRules
+			);
 			totalLinks += fileLinks.length;
 
 			for (const link of fileLinks) {
@@ -67,7 +72,14 @@ export class LinkManager {
 		const cache = this.app.metadataCache.getFileCache(file);
 		if (!cache) return [];
 
-		return this.extractLinksFromCache(file, cache);
+		return this.applyValidationRules(
+			this.extractLinksFromCache(file, cache),
+			this.validationRules
+		);
+	}
+
+	updateValidationRules(rules: ValidationRuleConfig[]): void {
+		this.validationRules = rules;
 	}
 
 	/**

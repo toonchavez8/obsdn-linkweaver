@@ -1,5 +1,7 @@
-import { App, Modal, TFile } from 'obsidian';
-import { ValidationResult, LinkInfo } from '../links/link-manager';
+import { App, Modal, Notice, TFile } from 'obsidian';
+import { ValidationResult } from '../links/link-manager';
+import { LinkPreview } from '../links/link-preview';
+import { LinkPath, PathFinder, SimilarNote } from '../discovery/path-finder';
 
 export class ValidationResultsModal extends Modal {
 	private result: ValidationResult;
@@ -369,10 +371,10 @@ export class BatchPreviewModal extends Modal {
 }
 
 export class LinkPreviewModal extends Modal {
-	private previews: Array<any>;
+	private previews: LinkPreview[];
 	private filterType: string;
 
-	constructor(app: App, previews: Array<any>, filterType: string) {
+	constructor(app: App, previews: LinkPreview[], filterType: string) {
 		super(app);
 		this.previews = previews;
 		this.filterType = filterType;
@@ -422,13 +424,148 @@ export class LinkPreviewModal extends Modal {
 		closeButton.addEventListener('click', () => this.close());
 	}
 
-	private capitalize(str: string): string {
-		return str.charAt(0).toUpperCase() + str.slice(1);
+	private capitalize(value: string): string {
+		return value.charAt(0).toUpperCase() + value.slice(1);
 	}
 
 	onClose() {
 		const { contentEl } = this;
 		contentEl.empty();
+	}
+}
+
+export class PathFinderModal extends Modal {
+	private pathFinder: PathFinder;
+	private maxDepth: number;
+
+	constructor(app: App, pathFinder: PathFinder, maxDepth: number) {
+		super(app);
+		this.pathFinder = pathFinder;
+		this.maxDepth = maxDepth;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+
+		contentEl.createEl('h2', { text: 'Find Path Between Notes' });
+		contentEl.createEl('p', { text: 'Enter note paths or note names. The shortest path is found through resolved Obsidian links.' });
+
+		const sourceInput = this.createTextInput(contentEl, 'Source note', 'Research/Topic A.md');
+		const targetInput = this.createTextInput(contentEl, 'Target note', 'Research/Topic D.md');
+		const resultContainer = contentEl.createDiv({ cls: 'linkweaver-path-results' });
+
+		const actions = contentEl.createDiv({ cls: 'linkweaver-validation-actions' });
+		const findButton = actions.createEl('button', { text: 'Find Shortest Path', cls: 'mod-cta' });
+		findButton.addEventListener('click', () => {
+			const sourceFile = this.findFile(sourceInput.value);
+			const targetFile = this.findFile(targetInput.value);
+
+			resultContainer.empty();
+			if (!sourceFile || !targetFile) {
+				resultContainer.createEl('p', { text: 'Source or target note was not found.' });
+				return;
+			}
+
+			const path = this.pathFinder.findShortestPath(sourceFile, targetFile, this.maxDepth);
+			this.renderPathResult(resultContainer, path);
+		});
+
+		const closeButton = actions.createEl('button', { text: 'Close' });
+		closeButton.addEventListener('click', () => this.close());
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+
+	private createTextInput(containerEl: HTMLElement, label: string, placeholder: string): HTMLInputElement {
+		const inputGroup = containerEl.createDiv({ cls: 'linkweaver-input-group' });
+		inputGroup.createEl('label', { text: label });
+		const input = inputGroup.createEl('input', { type: 'text', placeholder });
+		input.style.width = '100%';
+		input.style.marginBottom = '10px';
+		return input;
+	}
+
+	private findFile(query: string): TFile | null {
+		const normalizedQuery = query.trim().replace(/\\/g, '/');
+		if (!normalizedQuery) {
+			return null;
+		}
+
+		return this.app.vault.getMarkdownFiles().find(file =>
+			file.path === normalizedQuery
+			|| file.basename === normalizedQuery
+			|| file.path === `${normalizedQuery}.md`
+		) ?? null;
+	}
+
+	private renderPathResult(containerEl: HTMLElement, path: LinkPath | null): void {
+		if (!path) {
+			containerEl.createEl('p', { text: `No path found within ${this.maxDepth} link step(s).` });
+			return;
+		}
+
+		containerEl.createEl('h3', { text: `Path found (${path.length} step(s))` });
+		const pathList = containerEl.createEl('ol');
+		path.files.forEach(file => {
+			const listItem = pathList.createEl('li');
+			listItem.createEl('span', { text: file.path });
+			listItem.style.cursor = 'pointer';
+			listItem.addEventListener('click', async () => {
+				await this.app.workspace.getLeaf(false).openFile(file);
+				this.close();
+			});
+		});
+	}
+}
+
+export class SimilarNotesModal extends Modal {
+	private sourceFile: TFile;
+	private similarNotes: SimilarNote[];
+
+	constructor(app: App, sourceFile: TFile, similarNotes: SimilarNote[]) {
+		super(app);
+		this.sourceFile = sourceFile;
+		this.similarNotes = similarNotes;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+
+		contentEl.createEl('h2', { text: 'Similar Notes' });
+		contentEl.createEl('p', { text: `Compared outgoing links from ${this.sourceFile.basename}.` });
+
+		if (this.similarNotes.length === 0) {
+			contentEl.createEl('p', { text: 'No similar notes found above the configured threshold.' });
+		} else {
+			const list = contentEl.createEl('ul', { cls: 'linkweaver-validation-list' });
+			this.similarNotes.forEach(similarNote => {
+				const listItem = list.createEl('li');
+				const scorePercent = Math.round(similarNote.score * 100);
+				listItem.createEl('strong', { text: similarNote.file.path });
+				listItem.createEl('span', { text: ` - ${scorePercent}% similar (${similarNote.sharedLinks.length} shared link(s))` });
+				listItem.style.cursor = 'pointer';
+				listItem.addEventListener('click', async () => {
+					await this.app.workspace.getLeaf(false).openFile(similarNote.file);
+					this.close();
+				});
+			});
+		}
+
+		const actions = contentEl.createDiv({ cls: 'linkweaver-validation-actions' });
+		const closeButton = actions.createEl('button', { text: 'Close' });
+		closeButton.addEventListener('click', () => this.close());
+
+		if (this.similarNotes.length === 0) {
+			new Notice('No similar notes found');
+		}
+	}
+
+	onClose() {
+		this.contentEl.empty();
 	}
 }
 

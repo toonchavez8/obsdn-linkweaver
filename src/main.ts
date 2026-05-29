@@ -7,52 +7,56 @@ import { LinkInserter } from './navigation/link-inserter';
 import { LinkManager } from './links/link-manager';
 import { BatchOperations } from './links/batch-operations';
 import { LinkPreviewManager } from './links/link-preview';
-import { ValidationResultsModal, OrphanedNotesModal, LinkStatsModal, BatchOperationModal, BatchPreviewModal, LinkPreviewModal } from './ui/modals';
+import { PathFinder } from './discovery/path-finder';
+import {
+	ValidationResultsModal,
+	OrphanedNotesModal,
+	LinkStatsModal,
+	BatchOperationModal,
+	BatchPreviewModal,
+	LinkPreviewModal,
+	PathFinderModal,
+	SimilarNotesModal
+} from './ui/modals';
 
 export default class LinkWeaverPlugin extends Plugin {
-	settings: LinkWeaverSettings;
-	detector: SequenceDetector;
-	navigator: Navigator;
-	linkInserter: LinkInserter;
-	linkManager: LinkManager;
-	batchOps: BatchOperations;
-	linkPreview: LinkPreviewManager;
+	settings!: LinkWeaverSettings;
+	detector!: SequenceDetector;
+	navigator!: Navigator;
+	linkInserter!: LinkInserter;
+	linkManager!: LinkManager;
+	batchOps!: BatchOperations;
+	linkPreview!: LinkPreviewManager;
+	pathFinder!: PathFinder;
 	statusBarItem: HTMLElement | null = null;
 
 	async onload() {
 		console.log('Loading LinkWeaver plugin');
 
-		// Load settings
 		await this.loadSettings();
 
-		// Initialize sequence detector, navigator, link inserter, link manager, batch operations, and link preview
 		this.detector = new SequenceDetector(this.app.vault, this.settings.customPatterns);
 		this.navigator = new Navigator(this.app, this.detector, this.settings);
 		this.linkInserter = new LinkInserter(this.app, this.detector, this.settings);
-		this.linkManager = new LinkManager(this.app);
+		this.linkManager = new LinkManager(this.app, this.settings.validationRules);
 		this.batchOps = new BatchOperations(this.app);
 		this.linkPreview = new LinkPreviewManager(this.app, this.settings);
+		this.pathFinder = new PathFinder(this.app, this.settings);
 
-		// Add settings tab
 		this.addSettingTab(new LinkWeaverSettingTab(this.app, this));
-
-		// Register commands
 		this.registerCommands();
 
-		// Initialize status bar if enabled
 		if (this.settings.showSequenceInStatusBar) {
 			this.initializeStatusBar();
 		}
 
-		// Register event handlers
 		this.registerEventHandlers();
 	}
 
 	onunload() {
 		console.log('Unloading LinkWeaver plugin');
-		if (this.statusBarItem) {
-			this.statusBarItem.remove();
-		}
+		this.statusBarItem?.remove();
+		this.linkPreview?.onunload();
 	}
 
 	async loadSettings() {
@@ -61,23 +65,17 @@ export default class LinkWeaverPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
-		// Update detector, navigator, link inserter, and link preview with new settings
-		if (this.detector) {
-			this.detector.updatePatterns(this.settings.customPatterns);
-		}
-		if (this.navigator) {
-			this.navigator.updateSettings(this.settings);
-		}
-		if (this.linkInserter) {
-			this.linkInserter.updateSettings(this.settings);
-		}
-		if (this.linkPreview) {
-			this.linkPreview.updateSettings(this.settings);
-		}
+
+		this.detector?.updatePatterns(this.settings.customPatterns);
+		this.navigator?.updateSettings(this.settings);
+		this.linkInserter?.updateSettings(this.settings);
+		this.linkPreview?.updateSettings(this.settings);
+		this.pathFinder?.updateSettings(this.settings);
+		this.linkManager?.updateValidationRules(this.settings.validationRules);
+		this.updateStatusBar();
 	}
 
 	private registerCommands() {
-		// Navigate to next in sequence
 		this.addCommand({
 			id: 'navigate-next',
 			name: 'Navigate to next in sequence',
@@ -88,7 +86,6 @@ export default class LinkWeaverPlugin extends Plugin {
 			}
 		});
 
-		// Navigate to previous in sequence
 		this.addCommand({
 			id: 'navigate-previous',
 			name: 'Navigate to previous in sequence',
@@ -99,38 +96,27 @@ export default class LinkWeaverPlugin extends Plugin {
 			}
 		});
 
-		// Show sequence overview
 		this.addCommand({
 			id: 'show-sequence-overview',
 			name: 'Show sequence overview',
-			callback: () => {
-				const info = this.navigator.getSequenceInfo();
-				if (info) {
-					const fileList = info.files.map((f, i) => 
-						`${i === info.currentIndex ? '→ ' : '  '}${i + 1}. ${f.basename}`
-					).join('\n');
-					console.log(`Sequence: ${info.pattern}\n${fileList}`);
-					// TODO: Create modal for better display
-				}
-			}
+			callback: () => this.logSequenceOverview()
 		});
 
-		// Show link statistics
 		this.addCommand({
 			id: 'show-link-stats',
 			name: 'Show link statistics',
 			callback: () => {
 				const activeFile = this.app.workspace.getActiveFile();
-				if (activeFile) {
-					const stats = this.linkManager.getLinkStats(activeFile);
-					new LinkStatsModal(this.app, activeFile, stats).open();
-				} else {
+				if (!activeFile) {
 					new Notice('No active file');
+					return;
 				}
+
+				const stats = this.linkManager.getLinkStats(activeFile);
+				new LinkStatsModal(this.app, activeFile, stats).open();
 			}
 		});
 
-		// Find orphaned notes
 		this.addCommand({
 			id: 'find-orphaned',
 			name: 'Find orphaned notes',
@@ -140,29 +126,43 @@ export default class LinkWeaverPlugin extends Plugin {
 			}
 		});
 
-		// Find path between notes
 		this.addCommand({
 			id: 'find-path',
 			name: 'Find path between notes',
 			callback: () => {
-				// TODO: Implement path finder
-				console.log('Find path between notes');
+				new PathFinderModal(this.app, this.pathFinder, this.settings.maxPathDepth).open();
 			}
 		});
 
-		// Insert sequence links
+		this.addCommand({
+			id: 'find-similar-notes',
+			name: 'Find similar notes',
+			callback: () => {
+				const activeFile = this.app.workspace.getActiveFile();
+				if (!activeFile) {
+					new Notice('No active file');
+					return;
+				}
+
+				const similarNotes = this.pathFinder.findSimilarNotes(activeFile);
+				new SimilarNotesModal(this.app, activeFile, similarNotes).open();
+			}
+		});
+
 		this.addCommand({
 			id: 'insert-sequence-links',
 			name: 'Insert sequence navigation links',
 			callback: async () => {
 				const activeFile = this.app.workspace.getActiveFile();
-				if (activeFile) {
-					await this.linkInserter.insertSequenceLinks(activeFile);
+				if (!activeFile) {
+					new Notice('No active file');
+					return;
 				}
+
+				await this.linkInserter.insertSequenceLinks(activeFile);
 			}
 		});
 
-		// Update all sequence links
 		this.addCommand({
 			id: 'update-all-sequence-links',
 			name: 'Update all sequence links',
@@ -171,7 +171,6 @@ export default class LinkWeaverPlugin extends Plugin {
 			}
 		});
 
-		// Validate all links
 		this.addCommand({
 			id: 'validate-all-links',
 			name: 'Validate all links',
@@ -182,7 +181,6 @@ export default class LinkWeaverPlugin extends Plugin {
 			}
 		});
 
-		// Validate current file links
 		this.addCommand({
 			id: 'validate-file-links',
 			name: 'Validate links in current file',
@@ -194,17 +192,13 @@ export default class LinkWeaverPlugin extends Plugin {
 				}
 
 				const links = await this.linkManager.validateFileLinks(activeFile);
-				const unresolved = links.filter(l => !l.isResolved);
-				
-				if (unresolved.length > 0) {
-					new Notice(`Found ${unresolved.length} unresolved link(s)`);
-				} else {
-					new Notice('All links are valid!');
-				}
+				const unresolved = links.filter(link => !link.isResolved);
+				new Notice(unresolved.length > 0
+					? `Found ${unresolved.length} unresolved link(s)`
+					: 'All links are valid!');
 			}
 		});
 
-		// Find hub pages
 		this.addCommand({
 			id: 'find-hub-pages',
 			name: 'Find hub pages',
@@ -215,15 +209,14 @@ export default class LinkWeaverPlugin extends Plugin {
 					return;
 				}
 
-				const message = hubs.slice(0, 5).map((h, i) => 
-					`${i + 1}. ${h.file.basename} (${h.linkCount} links)`
-				).join('\n');
+				const message = hubs.slice(0, 5)
+					.map((hubPage, resultIndex) => `${resultIndex + 1}. ${hubPage.file.basename} (${hubPage.linkCount} links)`)
+					.join('\n');
 				console.log('Top Hub Pages:\n' + message);
 				new Notice(`Found ${hubs.length} hub pages (see console)`);
 			}
 		});
 
-		// Export link statistics to CSV
 		this.addCommand({
 			id: 'export-stats-csv',
 			name: 'Export link statistics to CSV',
@@ -234,7 +227,6 @@ export default class LinkWeaverPlugin extends Plugin {
 			}
 		});
 
-		// Export link statistics to JSON
 		this.addCommand({
 			id: 'export-stats-json',
 			name: 'Export link statistics to JSON',
@@ -245,7 +237,6 @@ export default class LinkWeaverPlugin extends Plugin {
 			}
 		});
 
-		// Batch link replacement
 		this.addCommand({
 			id: 'batch-replace-link',
 			name: 'Batch replace link',
@@ -254,33 +245,12 @@ export default class LinkWeaverPlugin extends Plugin {
 					this.app,
 					'Batch Link Replacement',
 					'Replace all instances of a link across the vault',
-					async (oldLink, newLink, dryRun) => {
-						if (dryRun) {
-							const preview = await this.batchOps.previewChanges(oldLink, newLink);
-							if (preview.length === 0) {
-								new Notice('No changes would be made');
-								return;
-							}
-							
-							new BatchPreviewModal(
-								this.app,
-								preview,
-								async () => {
-									const result = await this.batchOps.batchReplaceLink(oldLink, newLink, false);
-									new Notice(`Replaced ${result.success} link(s) in ${result.success} file(s)`);
-								}
-							).open();
-						} else {
-							const result = await this.batchOps.batchReplaceLink(oldLink, newLink, false);
-							new Notice(`Replaced ${result.success} link(s) in ${result.success} file(s)`);
-						}
-					}
+					async (oldLink, newLink, dryRun) => this.handleBatchReplace(oldLink, newLink, dryRun)
 				);
 				modal.open();
 			}
 		});
 
-		// Undo last batch operation
 		this.addCommand({
 			id: 'undo-batch-operation',
 			name: 'Undo last batch operation',
@@ -289,46 +259,22 @@ export default class LinkWeaverPlugin extends Plugin {
 			}
 		});
 
-		// Show outgoing links with preview
 		this.addCommand({
 			id: 'show-outgoing-links',
 			name: 'Show outgoing links with preview',
-			callback: async () => {
-				const previews = await this.linkPreview.filterLinksInView('outgoing');
-				if (previews.length === 0) {
-					new Notice('No outgoing links found');
-					return;
-				}
-				new LinkPreviewModal(this.app, previews, 'outgoing').open();
-			}
+			callback: async () => this.showLinkPreview('outgoing')
 		});
 
-		// Show incoming links with preview
 		this.addCommand({
 			id: 'show-incoming-links',
 			name: 'Show incoming links with preview',
-			callback: async () => {
-				const previews = await this.linkPreview.filterLinksInView('incoming');
-				if (previews.length === 0) {
-					new Notice('No incoming links found');
-					return;
-				}
-				new LinkPreviewModal(this.app, previews, 'incoming').open();
-			}
+			callback: async () => this.showLinkPreview('incoming')
 		});
 
-		// Show unresolved links with preview
 		this.addCommand({
 			id: 'show-unresolved-links',
 			name: 'Show unresolved links with preview',
-			callback: async () => {
-				const previews = await this.linkPreview.filterLinksInView('unresolved');
-				if (previews.length === 0) {
-					new Notice('No unresolved links found');
-					return;
-				}
-				new LinkPreviewModal(this.app, previews, 'unresolved').open();
-			}
+			callback: async () => this.showLinkPreview('unresolved')
 		});
 	}
 
@@ -337,17 +283,7 @@ export default class LinkWeaverPlugin extends Plugin {
 		this.statusBarItem.addClass('linkweaver-status-bar');
 		this.updateStatusBar();
 
-		// Update on click
-		this.statusBarItem.addEventListener('click', () => {
-			const info = this.navigator.getSequenceInfo();
-			if (info) {
-				const fileList = info.files.map((f, i) => 
-					`${i === info.currentIndex ? '→ ' : '  '}${i + 1}. ${f.basename}`
-				).join('\n');
-				console.log(`Sequence: ${info.pattern}\n${fileList}`);
-				// TODO: Show modal instead of console
-			}
-		});
+		this.statusBarItem.addEventListener('click', () => this.logSequenceOverview());
 	}
 
 	private updateStatusBar() {
@@ -356,42 +292,37 @@ export default class LinkWeaverPlugin extends Plugin {
 		}
 
 		const info = this.navigator.getSequenceInfo();
-		if (info) {
-			const position = `${info.currentIndex + 1}/${info.files.length}`;
-			this.statusBarItem.setText(`📝 ${position} | ${info.pattern}`);
-			this.statusBarItem.style.display = 'block';
-		} else {
+		if (!info) {
 			this.statusBarItem.style.display = 'none';
+			return;
 		}
+
+		const position = `${info.currentIndex + 1}/${info.files.length}`;
+		this.statusBarItem.setText(`LinkWeaver ${position} | ${info.pattern}`);
+		this.statusBarItem.style.display = 'block';
 	}
 
 	private registerEventHandlers() {
-		// Update status bar when active file changes
 		this.registerEvent(
-			this.app.workspace.on('active-leaf-change', () => {
-				this.updateStatusBar();
-			})
+			this.app.workspace.on('active-leaf-change', () => this.updateStatusBar())
 		);
 
-		// Update status bar when file is opened
 		this.registerEvent(
-			this.app.workspace.on('file-open', () => {
-				this.updateStatusBar();
-			})
+			this.app.workspace.on('file-open', () => this.updateStatusBar())
 		);
 
-		// Clear cache when files are renamed/deleted
 		this.registerEvent(
 			this.app.vault.on('rename', async (file, oldPath) => {
 				this.detector.invalidateFile(oldPath);
+
 				if ('path' in file) {
 					this.detector.invalidateFile(file.path);
-					
-					// Auto-update links if enabled
-					if (this.settings.autoUpdateLinks && file instanceof TFile) {
-						await this.batchOps.updateLinksOnRename(oldPath, file.path);
-					}
 				}
+
+				if (this.settings.autoUpdateLinks && file instanceof TFile) {
+					await this.batchOps.updateLinksOnRename(oldPath, file.path);
+				}
+
 				this.updateStatusBar();
 			})
 		);
@@ -405,28 +336,76 @@ export default class LinkWeaverPlugin extends Plugin {
 			})
 		);
 
-		// Clear cache when files are created
 		this.registerEvent(
-			this.app.vault.on('create', () => {
+			this.app.vault.on('create', async (file) => {
 				this.detector.clearCache();
+
+				if (this.settings.autoInsertSequenceLinks && file instanceof TFile && file.extension === 'md') {
+					await this.linkInserter.insertSequenceLinks(file);
+				}
+
 				this.updateStatusBar();
 			})
 		);
 
-		// Validate links on save if enabled
-		if (this.settings.validateLinksOnSave) {
-			this.registerEvent(
-				this.app.vault.on('modify', async (file) => {
-					if (file instanceof TFile && file.extension === 'md') {
-						const links = await this.linkManager.validateFileLinks(file);
-						const unresolved = links.filter(l => !l.isResolved);
-						
-						if (unresolved.length > 0) {
-							new Notice(`${file.basename}: ${unresolved.length} unresolved link(s)`);
-						}
-					}
-				})
-			);
+		this.registerEvent(
+			this.app.vault.on('modify', async (file) => {
+				if (!this.settings.validateLinksOnSave || !(file instanceof TFile) || file.extension !== 'md') {
+					return;
+				}
+
+				const links = await this.linkManager.validateFileLinks(file);
+				const unresolved = links.filter(link => !link.isResolved);
+				if (unresolved.length > 0) {
+					new Notice(`${file.basename}: ${unresolved.length} unresolved link(s)`);
+				}
+			})
+		);
+	}
+
+	private logSequenceOverview(): void {
+		const info = this.navigator.getSequenceInfo();
+		if (!info) {
+			new Notice('No sequence detected for this file');
+			return;
 		}
+
+		const fileList = info.files
+			.map((sequenceFile, fileIndex) => `${fileIndex === info.currentIndex ? '-> ' : '   '}${fileIndex + 1}. ${sequenceFile.basename}`)
+			.join('\n');
+		console.log(`Sequence: ${info.pattern}\n${fileList}`);
+	}
+
+	private async handleBatchReplace(oldLink: string, newLink: string, dryRun: boolean): Promise<void> {
+		if (!dryRun) {
+			const result = await this.batchOps.batchReplaceLink(oldLink, newLink, false);
+			new Notice(`Replaced ${result.success} link(s) in ${result.success} file(s)`);
+			return;
+		}
+
+		const preview = await this.batchOps.previewChanges(oldLink, newLink);
+		if (preview.length === 0) {
+			new Notice('No changes would be made');
+			return;
+		}
+
+		new BatchPreviewModal(
+			this.app,
+			preview,
+			async () => {
+				const result = await this.batchOps.batchReplaceLink(oldLink, newLink, false);
+				new Notice(`Replaced ${result.success} link(s) in ${result.success} file(s)`);
+			}
+		).open();
+	}
+
+	private async showLinkPreview(filterType: 'outgoing' | 'incoming' | 'unresolved'): Promise<void> {
+		const previews = await this.linkPreview.filterLinksInView(filterType);
+		if (previews.length === 0) {
+			new Notice(`No ${filterType} links found`);
+			return;
+		}
+
+		new LinkPreviewModal(this.app, previews, filterType).open();
 	}
 }

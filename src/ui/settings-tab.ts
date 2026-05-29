@@ -69,10 +69,8 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.validateLinksOnSave = value;
 					await this.plugin.saveSettings();
-					// Re-register event handlers with new settings
 					if (value) {
-						const notice = new Notice('Link validation on save enabled. Reload plugin to activate.', 3000)
-						notice.hide();
+						new Notice('Link validation on save enabled.', 3000);
 					}
 				}));
 
@@ -83,9 +81,9 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 				.setPlaceholder('200')
 				.setValue(String(this.plugin.settings.linkPreviewLength))
 				.onChange(async (value) => {
-					const num = Number.parseInt(value);
-					if (!Number.isNaN(num) && num > 0) {
-						this.plugin.settings.linkPreviewLength = num;
+					const previewLength = Number.parseInt(value, 10);
+					if (!Number.isNaN(previewLength) && previewLength > 0) {
+						this.plugin.settings.linkPreviewLength = previewLength;
 						await this.plugin.saveSettings();
 					}
 				}));
@@ -110,9 +108,9 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 				.setPlaceholder('5')
 				.setValue(String(this.plugin.settings.maxPathDepth))
 				.onChange(async (value) => {
-					const num = Number.parseInt(value);
-					if (!Number.isNaN(num) && num > 0) {
-						this.plugin.settings.maxPathDepth = num;
+					const maxPathDepth = Number.parseInt(value, 10);
+					if (!Number.isNaN(maxPathDepth) && maxPathDepth > 0) {
+						this.plugin.settings.maxPathDepth = maxPathDepth;
 						await this.plugin.saveSettings();
 					}
 				}));
@@ -124,9 +122,9 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 				.setPlaceholder('0.5')
 				.setValue(String(this.plugin.settings.similarityThreshold))
 				.onChange(async (value) => {
-					const num = Number.parseFloat(value);
-					if (!Number.isNaN(num) && num >= 0 && num <= 1) {
-						this.plugin.settings.similarityThreshold = num;
+					const similarityThreshold = Number.parseFloat(value);
+					if (!Number.isNaN(similarityThreshold) && similarityThreshold >= 0 && similarityThreshold <= 1) {
+						this.plugin.settings.similarityThreshold = similarityThreshold;
 						await this.plugin.saveSettings();
 					}
 				}));
@@ -140,8 +138,8 @@ export class LinkWeaverSettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.excludeFolders = value
 						.split(',')
-						.map(s => s.trim())
-						.filter(s => s.length > 0);
+						.map(folderPath => folderPath.trim())
+						.filter(folderPath => folderPath.length > 0);
 					await this.plugin.saveSettings();
 				}));
 	}

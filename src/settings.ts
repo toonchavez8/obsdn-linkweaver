@@ -26,7 +26,7 @@ export interface LinkWeaverSettings {
 	autoUpdateLinks: boolean;
 	validateLinksOnSave: boolean;
 	linkPreviewLength: number;
-	autoInsertSequenceLinks: boolean;  // NEW: Auto-insert links on file creation
+	autoInsertSequenceLinks: boolean;
 	validationRules: ValidationRuleConfig[]; // Custom validation rules
 	
 	// Discovery

@@ -7,9 +7,9 @@ export function naturalSort(a: string, b: string): number {
 	const aParts = a.match(regex) || [];
 	const bParts = b.match(regex) || [];
 
-	for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-		const aPart = aParts[i] || '';
-		const bPart = bParts[i] || '';
+	for (let partIndex = 0; partIndex < Math.max(aParts.length, bParts.length); partIndex++) {
+		const aPart = aParts[partIndex] || '';
+		const bPart = bParts[partIndex] || '';
 
 		// If both parts are numbers, compare numerically
 		const aNum = Number.parseInt(aPart);
@@ -33,6 +33,6 @@ export function naturalSort(a: string, b: string): number {
 /**
  * Sort an array of strings using natural sorting
  */
-export function naturalSortArray(arr: string[]): string[] {
-	return [...arr].sort(naturalSort);
+export function naturalSortArray(values: string[]): string[] {
+	return [...values].sort(naturalSort);
 }
