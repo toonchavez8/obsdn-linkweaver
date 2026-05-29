@@ -89,4 +89,5 @@ See `docs/TESTING_GUIDE.md` for the full manual and automated testing plan.
 
 - `docs/CODE_WALKTHROUGH.md`: plain-English explanation of the code with references.
 - `docs/TESTING_GUIDE.md`: automated tests and Obsidian manual testing steps.
+- `docs/PHASE_ROADMAP.md`: recovered phase roadmap and planning checklist.
 - `DEVELOPMENT.md`: development workflow and test vault setup.
